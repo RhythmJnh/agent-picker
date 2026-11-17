@@ -8,8 +8,9 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="${AGENT_PICKER_HOME:-$HOME/.agent-picker}"
 BIN="$DEST/bin/agent-picker"
 
-mkdir -p "$DEST/bin"
+mkdir -p "$DEST/bin" "$DEST/lib"
 cp "$SRC/bin/agent-picker" "$BIN"
+cp "$SRC/lib/i18n.sh" "$DEST/lib/i18n.sh"
 cp "$SRC/shell/hook.sh" "$DEST/hook.sh"
 chmod +x "$BIN"
 
@@ -22,9 +23,9 @@ for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
     installed_rc="$installed_rc $rc"
   fi
 done
-[ -n "$installed_rc" ] || { echo "没找到 ~/.zshrc 或 ~/.bashrc，未挂载钩子" >&2; exit 1; }
+[ -n "$installed_rc" ] || { "$BIN" _say T_NO_RC >&2; exit 1; }
 
-echo "已安装到 ${DEST}，钩子写入:$installed_rc"
+"$BIN" _say T_INSTALLED_TO "$DEST" "$installed_rc"
 echo
 "$BIN" list
 echo
@@ -34,5 +35,4 @@ if [ "${1:-}" != "--yes" ] && [ -t 0 ] && [ -t 1 ]; then
 fi
 
 echo
-echo "完成。新开一个终端窗口即可看到选择菜单。"
-echo "常用: agent-picker default <id> | mode ask|auto|off | timeout <秒> | add <id> <名称> <命令>"
+"$BIN" _say T_INSTALL_FINISH

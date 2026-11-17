@@ -9,7 +9,8 @@ setup() {
   T="$(mktemp -d)"
   export HOME="$T/home" AGENT_PICKER_HOME="$T/home/.agent-picker"
   export AGENT_PICKER_CONFIG_DIR="$T/home/.config/agent-picker"
-  unset AGENT_PICKER_ACTIVE CLAUDECODE TMUX SSH_CONNECTION SSH_TTY TERM_PROGRAM AGENT_PICKER
+  unset AGENT_PICKER_ACTIVE CLAUDECODE TMUX SSH_CONNECTION SSH_TTY TERM_PROGRAM AGENT_PICKER LC_ALL LC_MESSAGES
+  export AGENT_PICKER_LANG=zh
   mkdir -p "$HOME" "$T/stubs"
   for c in claude codex; do
     printf '#!/bin/sh\necho "STUB_%s_RAN $* active=$AGENT_PICKER_ACTIVE"\n' "$c" > "$T/stubs/$c"
@@ -88,6 +89,26 @@ keys 'kd\r' | in_pty "$AP" pick >/dev/null
 check "菜单内按 d 设为默认" "claude" "$("$AP" default </dev/null)"
 teardown
 
+echo "中英双语"
+setup
+check "AGENT_PICKER_LANG=en 显示英文" "✓ installed" "$(AGENT_PICKER_LANG=en "$AP" list)"
+unset AGENT_PICKER_LANG
+check "LANG=en_US 自动英文" "✓ installed" "$(LANG=en_US.UTF-8 "$AP" list)"
+check "LANG=zh_CN 自动中文" "✓ 已安装" "$(LANG=zh_CN.UTF-8 "$AP" list)"
+check "LC_ALL 优先于 LANG" "✓ installed" "$(LC_ALL=en_US.UTF-8 LANG=zh_CN.UTF-8 "$AP" list)"
+check "lang 拒绝非法值" "auto / zh / en" "$(LANG=en_US.UTF-8 "$AP" lang fr 2>&1)"
+check "lang zh 覆盖系统语言" "界面语言: zh" "$(LANG=en_US.UTF-8 "$AP" lang zh)"
+check "配置 lang 生效" "✓ 已安装" "$(LANG=en_US.UTF-8 "$AP" list)"
+check "环境变量优先于配置" "✓ installed" "$(AGENT_PICKER_LANG=en "$AP" list)"
+"$AP" lang auto >/dev/null
+check "英文错误提示" "unknown agent: nope" "$(LANG=en_US.UTF-8 "$AP" default nope 2>&1)"
+check "英文菜单标题" "Choose an agent to launch" "$(keys 'q' | LANG=en_US.UTF-8 in_pty "$AP" pick)"
+check "英文倒计时" "launching in 1s" "$("$AP" timeout 1 >/dev/null; sleep 3 | LANG=en_US.UTF-8 in_pty "$AP" launch)"
+check "英文帮助" "Usage:" "$(LANG=en_US.UTF-8 "$AP" help)"
+check_not "_say 拒绝非文案变量名" "/usr/bin" "$("$AP" _say PATH)"
+check_not "_say 不执行注入" "uid=" "$("$AP" _say 'T_X;id' 2>&1)"
+teardown
+
 echo "安装与卸载"
 setup
 printf 'export FOO=1\n' > "$HOME/.zshrc"
@@ -95,7 +116,7 @@ printf 'export FOO=1\n' > "$HOME/.zshrc"
 "$ROOT/install.sh" --yes >/dev/null
 check "rc 钩子只写入一次" "1" "$(grep -c '>>> agent-picker >>>' "$HOME/.zshrc")"
 check "保留原 rc 内容" "export FOO=1" "$(cat "$HOME/.zshrc")"
-check "可执行文件已安装" "0.1.0" "$("$AGENT_PICKER_HOME/bin/agent-picker" --version)"
+check "可执行文件已安装" "0.2.0" "$("$AGENT_PICKER_HOME/bin/agent-picker" --version)"
 out=$(zsh -c ". '$AGENT_PICKER_HOME/hook.sh'; echo \$PATH")
 check "非交互 shell 只加 PATH" "$AGENT_PICKER_HOME/bin" "$out"
 out=$(zsh -ic 'typeset -f _agent_picker_once >/dev/null && echo HOOKED' 2>/dev/null)
@@ -105,6 +126,9 @@ check_not "卸载移除 rc 钩子" "agent-picker" "$(cat "$HOME/.zshrc")"
 check "卸载后 rc 原内容还在" "export FOO=1" "$(cat "$HOME/.zshrc")"
 [ -e "$AGENT_PICKER_HOME" ] && r=exists || r=gone
 check "卸载删除安装目录" "gone" "$r"
+out=$(env -u AGENT_PICKER_LANG LANG=en_US.UTF-8 "$ROOT/install.sh" --yes)
+check "安装提示跟随语言" "Installed to" "$out"
+check "安装后菜单可用（含 lib）" "✓ installed" "$(env -u AGENT_PICKER_LANG LANG=en_US.UTF-8 "$AGENT_PICKER_HOME/bin/agent-picker" list)"
 teardown
 
 echo

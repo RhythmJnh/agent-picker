@@ -21,6 +21,7 @@
 - **零打扰**：默认 3 秒倒计时后自动启动默认 agent；也可以设成直接启动或一直等你选
 - **不添乱**：IDE 内置终端、SSH 会话、agent 内部打开的子 shell 都不会弹出
 - **零依赖**：纯 bash 编写，兼容 macOS 自带的 bash 3.2，支持 zsh 和 bash
+- **中英双语**：界面语言跟随系统，也可以手动指定
 - **干净卸载**：只在 rc 文件末尾写入一段带标记的代码，卸载时只删这一段
 
 ## 安装
@@ -61,6 +62,7 @@ agent-picker list                # 列出支持的 agent 及安装状态
 agent-picker default openclaw    # 设置默认 agent（不带参数则弹菜单选）
 agent-picker mode auto           # ask=弹菜单（默认）  auto=直接启动默认  off=关闭
 agent-picker timeout 3           # 倒计时秒数，0=一直等你选
+agent-picker lang en             # 界面语言：auto（跟随系统）| zh | en
 agent-picker add cc-yolo "Claude YOLO" "claude --dangerously-skip-permissions"
 agent-picker remove cc-yolo      # 删除自定义项；对内置项则是隐藏
 agent-picker config              # 查看配置
@@ -101,10 +103,13 @@ agent-picker uninstall [--purge] # 卸载，--purge 连配置一起删
 default=claude   # 默认 agent 的 id，shell 表示默认进普通终端
 mode=ask         # ask | auto | off
 timeout=3        # 倒计时秒数，0=一直等
+lang=auto        # auto | zh | en
 skip_ide=1       # VS Code / Cursor / JetBrains 内置终端不弹出
 skip_ssh=1       # SSH 会话不弹出
 skip_tmux=0      # tmux 中不弹出
 ```
+
+`lang=auto` 时依次参考 `LC_ALL` / `LC_MESSAGES` / `LANG`，都没设置时在 macOS 上读系统首选语言；中文环境显示中文，其他显示英文。环境变量 `AGENT_PICKER_LANG` 优先级最高。
 
 `agents`：自定义 agent，每行一个，格式 `id|显示名|启动命令`。启动命令写成 `-` 表示隐藏这一项。
 

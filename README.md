@@ -8,14 +8,12 @@ You have several CLI agents installed (Claude Code, Codex, OpenClaw, Gemini CLI,
 **agent-picker** shows a small menu when a new terminal opens. It lists the agents installed on your machine and launches your default after 3 seconds if you don't press anything. Press a number to launch a different one. When the agent exits, you're back in your normal shell.
 
 ```
-选择要启动的 agent
-  ❯ 1  Claude Code          claude  ★ 默认
+Choose an agent to launch
+  ❯ 1  Claude Code          claude  ★ default
     2  OpenClaw             openclaw tui
-    3  Shell                不启动 agent
-  ↑↓/数字 选择 · Enter 启动 · d 设为默认 · q 进 shell  3s 后启动 Claude Code
+    3  Shell                no agent
+  ↑↓/number select · Enter launch · d set default · q shell  launching in 3s: Claude Code
 ```
-
-> The interface text is currently in Chinese. The keys and commands work the same in any locale.
 
 ## Features
 
@@ -23,6 +21,7 @@ You have several CLI agents installed (Claude Code, Codex, OpenClaw, Gemini CLI,
 - **Stays out of the way**: a 3-second countdown launches your default. You can also launch it straight away or wait for your choice.
 - **No surprises**: the menu is skipped in IDE terminals, in SSH sessions and in shells opened from inside an agent.
 - **No dependencies**: plain bash that runs on the bash 3.2 bundled with macOS. Supports zsh and bash.
+- **English and Chinese**: the interface follows your system language, or you can set it yourself.
 - **Clean uninstall**: one marked block is appended to your rc file, and only that block is removed on uninstall.
 
 ## Install
@@ -63,6 +62,7 @@ agent-picker list                # list supported agents and whether they're ins
 agent-picker default openclaw    # set the default agent (no argument: choose from a menu)
 agent-picker mode auto           # ask = show menu (default)  auto = launch default  off = disabled
 agent-picker timeout 3           # countdown in seconds, 0 = wait for your choice
+agent-picker lang en             # interface language: auto (follow system) | zh | en
 agent-picker add cc-yolo "Claude YOLO" "claude --dangerously-skip-permissions"
 agent-picker remove cc-yolo      # remove a custom agent, or hide a built-in one
 agent-picker config              # show the config
@@ -103,10 +103,13 @@ Config lives in `~/.config/agent-picker/` (`XDG_CONFIG_HOME` is respected).
 default=claude   # id of the default agent; "shell" means default to a plain terminal
 mode=ask         # ask | auto | off
 timeout=3        # countdown in seconds, 0 = wait
+lang=auto        # auto | zh | en
 skip_ide=1       # skip in VS Code / Cursor / JetBrains terminals
 skip_ssh=1       # skip in SSH sessions
 skip_tmux=0      # skip inside tmux
 ```
+
+With `lang=auto`, the language is taken from `LC_ALL` / `LC_MESSAGES` / `LANG`. If none of these is set, macOS's preferred system language is used. Chinese locales get Chinese, and everything else gets English. The `AGENT_PICKER_LANG` environment variable overrides all of this.
 
 `agents`: custom agents, one per line, as `id|display name|launch command`. A launch command of `-` hides that entry.
 
