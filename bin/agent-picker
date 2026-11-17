@@ -1,0 +1,388 @@
+#!/usr/bin/env bash
+# agent-picker: 打开终端时选择要启动的 CLI agent（兼容 macOS 自带 bash 3.2）
+set -u
+
+VERSION="0.1.0"
+APP_HOME="${AGENT_PICKER_HOME:-$HOME/.agent-picker}"
+CONFIG_DIR="${AGENT_PICKER_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-picker}"
+CONFIG_FILE="$CONFIG_DIR/config"
+AGENTS_FILE="$CONFIG_DIR/agents"
+SHELL_ID="shell"
+BLOCK_BEGIN="# >>> agent-picker >>>"
+BLOCK_END="# <<< agent-picker <<<"
+
+# 内置 agent：id|显示名|启动命令（命令的第一个词用来检测是否已安装）
+BUILTIN_AGENTS='claude|Claude Code|claude
+codex|Codex CLI|codex
+openclaw|OpenClaw|openclaw tui
+gemini|Gemini CLI|gemini
+opencode|OpenCode|opencode
+qwen|Qwen Code|qwen
+aider|Aider|aider
+goose|Goose|goose session
+crush|Crush|crush
+cursor|Cursor CLI|cursor-agent
+copilot|GitHub Copilot CLI|copilot
+amp|Amp|amp
+droid|Factory Droid|droid
+kimi|Kimi CLI|kimi
+iflow|iFlow CLI|iflow'
+
+DEFAULT_CONFIG='default=
+mode=ask
+timeout=3
+skip_ide=1
+skip_ssh=1
+skip_tmux=0'
+
+die() { printf 'agent-picker: %s\n' "$*" >&2; exit 1; }
+
+# ---------- 配置 ----------
+
+cfg_get() {
+  local line
+  line=$(grep -E "^$1=" "$CONFIG_FILE" 2>/dev/null | tail -n1)
+  [ -z "$line" ] && line=$(printf '%s\n' "$DEFAULT_CONFIG" | grep -E "^$1=" | tail -n1)
+  printf '%s' "${line#*=}"
+}
+
+cfg_set() {
+  ensure_config
+  local tmp="$CONFIG_FILE.tmp.$$"
+  awk -v k="$1" -v v="$2" '
+    index($0, k "=") == 1 { print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+}
+
+ensure_config() {
+  [ -f "$CONFIG_FILE" ] && return 0
+  mkdir -p "$CONFIG_DIR" || die "无法创建配置目录 $CONFIG_DIR"
+  local first
+  first=$(installed_agents | head -n1 | cut -d'|' -f1)
+  printf '%s\n' "$DEFAULT_CONFIG" | sed "s/^default=\$/default=${first:-$SHELL_ID}/" > "$CONFIG_FILE"
+  if [ ! -f "$AGENTS_FILE" ]; then
+    cat > "$AGENTS_FILE" <<'EOF'
+# 自定义 agent，每行一个：id|显示名|启动命令
+# 与内置 id 相同会覆盖内置项；启动命令写 - 表示隐藏该项
+# 例：myagent|My Agent|npx my-agent --flag
+EOF
+  fi
+}
+
+# ---------- agent 列表 ----------
+
+all_agents() {
+  { printf '%s\n' "$BUILTIN_AGENTS"
+    [ -f "$AGENTS_FILE" ] && grep -vE '^[[:space:]]*(#|$)' "$AGENTS_FILE"
+  } | awk -F'|' 'NF >= 3 { if (!($1 in seen)) order[++n] = $1; seen[$1] = $0 }
+                 END { for (i = 1; i <= n; i++) print seen[order[i]] }'
+}
+
+is_installed() { # cmd
+  [ "$1" != "-" ] && command -v "${1%% *}" >/dev/null 2>&1
+}
+
+installed_agents() {
+  local id name cmd
+  all_agents | while IFS='|' read -r id name cmd; do
+    is_installed "$cmd" && printf '%s|%s|%s\n' "$id" "$name" "$cmd"
+  done
+}
+
+is_builtin() { printf '%s\n' "$BUILTIN_AGENTS" | cut -d'|' -f1 | grep -qx "$1"; }
+is_known() { [ "$1" = "$SHELL_ID" ] || all_agents | cut -d'|' -f1 | grep -qx "$1"; }
+valid_id() { printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9_-]*$'; }
+
+load_menu() {
+  IDS=(); NAMES=(); CMDS=()
+  local id name cmd
+  while IFS='|' read -r id name cmd; do
+    IDS+=("$id"); NAMES+=("$name"); CMDS+=("$cmd")
+  done < <(installed_agents)
+  IDS+=("$SHELL_ID"); NAMES+=("Shell"); CMDS+=("")
+}
+
+index_of() {
+  local i
+  for ((i = 0; i < ${#IDS[@]}; i++)); do
+    [ "${IDS[$i]}" = "$1" ] && { echo "$i"; return; }
+  done
+  echo -1
+}
+
+# ---------- 交互菜单 ----------
+
+render() { # title selected countdown
+  local i n=${#IDS[@]} def tag desc
+  def=$(cfg_get default)
+  printf '\033[1m%s\033[0m\n' "$1"
+  for ((i = 0; i < n; i++)); do
+    tag=""; [ "${IDS[$i]}" = "$def" ] && tag='  \033[33m★ 默认\033[0m'
+    desc="${CMDS[$i]:-不启动 agent}"
+    if [ "$i" -eq "$2" ]; then
+      printf '  \033[36m❯ %d  %-20s\033[0m \033[2m%s\033[0m%b\n' $((i + 1)) "${NAMES[$i]}" "$desc" "$tag"
+    else
+      printf '    %d  %-20s \033[2m%s\033[0m%b\n' $((i + 1)) "${NAMES[$i]}" "$desc" "$tag"
+    fi
+  done
+  printf '\033[2m  ↑↓/数字 选择 · Enter 启动 · d 设为默认 · q 进 shell\033[0m'
+  [ "$3" -gt 0 ] && printf '  \033[33m%ds 后启动 %s\033[0m' "$3" "${NAMES[$2]}"
+  printf '\n'
+}
+
+read_key() { # wait_seconds(0=一直等) -> KEY
+  local k="" rest=""
+  if [ "$1" -gt 0 ]; then
+    IFS= read -rsn1 -t "$1" k </dev/tty || { KEY=TIMEOUT; return; }
+  else
+    IFS= read -rsn1 k </dev/tty || { KEY=q; return; }
+  fi
+  case "$k" in
+    $'\033')
+      IFS= read -rsn2 -t 1 rest </dev/tty
+      case "$rest" in
+        '[A'|'OA') KEY=up ;;
+        '[B'|'OB') KEY=down ;;
+        '') KEY=esc ;;
+        *) KEY=other ;;
+      esac ;;
+    '') KEY=enter ;;
+    $'\004') KEY=q ;;
+    *) KEY="$k" ;;
+  esac
+}
+
+choose() { # title preselect countdown -> CHOICE
+  local title="$1" sel="$2" count="$3" n=${#IDS[@]} first=1
+  printf '\033[?25l' >/dev/tty
+  trap 'printf "\033[?25h\n" >/dev/tty; exit 130' INT
+  while :; do
+    [ "$first" -eq 1 ] || printf '\033[%dA\033[J' $((n + 2)) >/dev/tty
+    first=0
+    render "$title" "$sel" "$count" >/dev/tty
+    if [ "$count" -gt 0 ]; then read_key 1; else read_key 0; fi
+    if [ "$KEY" = TIMEOUT ]; then
+      count=$((count - 1))
+      [ "$count" -le 0 ] && { CHOICE=$sel; break; }
+      continue
+    fi
+    count=0
+    case "$KEY" in
+      up|k) sel=$(( (sel - 1 + n) % n )) ;;
+      down|j) sel=$(( (sel + 1) % n )) ;;
+      enter) CHOICE=$sel; break ;;
+      q|esc) CHOICE=$((n - 1)); break ;;
+      d) cfg_set default "${IDS[$sel]}" ;;
+      [1-9]) [ "$KEY" -le "$n" ] && { CHOICE=$((KEY - 1)); break; } ;;
+    esac
+  done
+  trap - INT
+  printf '\033[?25h' >/dev/tty
+}
+
+run_agent() { # index
+  local cmd="${CMDS[$1]}"
+  [ -z "$cmd" ] && return 0
+  printf '\033[2m→ %s\033[0m\n' "$cmd" >/dev/tty
+  export AGENT_PICKER_ACTIVE=1
+  eval "exec $cmd"
+}
+
+# ---------- 跳过判断（只用于打开终端时的自动弹出） ----------
+
+should_skip() {
+  [ "${AGENT_PICKER:-1}" = 0 ] && return 0
+  [ -n "${AGENT_PICKER_ACTIVE:-}" ] && return 0
+  [ -n "${CLAUDECODE:-}" ] && return 0
+  { [ -t 0 ] && [ -t 1 ]; } || return 0
+  [ "$(cfg_get mode)" = off ] && return 0
+  if [ "$(cfg_get skip_ide)" = 1 ]; then
+    [ "${TERM_PROGRAM:-}" = vscode ] && return 0
+    [ "${TERMINAL_EMULATOR:-}" = JetBrains-JediTerm ] && return 0
+  fi
+  [ "$(cfg_get skip_ssh)" = 1 ] && [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && return 0
+  [ "$(cfg_get skip_tmux)" = 1 ] && [ -n "${TMUX:-}" ] && return 0
+  return 1
+}
+
+# ---------- 子命令 ----------
+
+cmd_pick() { # countdown honor_auto
+  ensure_config
+  load_menu
+  local idx
+  idx=$(index_of "$(cfg_get default)")
+  [ "$idx" -lt 0 ] && idx=0
+  if [ "$2" = 1 ] && [ "$(cfg_get mode)" = auto ]; then
+    run_agent "$idx"; return
+  fi
+  if [ ${#IDS[@]} -eq 1 ]; then
+    printf 'agent-picker: 没有检测到已安装的 agent（agent-picker list 查看支持列表）\n' >&2
+    return 0
+  fi
+  choose "选择要启动的 agent" "$idx" "$1"
+  run_agent "$CHOICE"
+}
+
+cmd_launch() {
+  should_skip && return 0
+  local t
+  t=$(cfg_get timeout)
+  cmd_pick "${t:-0}" 1
+}
+
+cmd_list() {
+  ensure_config
+  local id name cmd def mark state
+  def=$(cfg_get default)
+  all_agents | while IFS='|' read -r id name cmd; do
+    mark=" "; [ "$id" = "$def" ] && mark="★"
+    if [ "$cmd" = "-" ]; then state="已隐藏"
+    elif is_installed "$cmd"; then state="✓ 已安装"
+    else state="- 未安装"; fi
+    printf '%s %-10s %-20s %-18s %s\n' "$mark" "$id" "$name" "$cmd" "$state"
+  done
+  mark=" "; [ "$def" = "$SHELL_ID" ] && mark="★"
+  printf '%s %-10s %-20s %-18s %s\n' "$mark" "$SHELL_ID" "Shell" "-" "不启动 agent"
+}
+
+cmd_default() {
+  ensure_config
+  if [ $# -eq 0 ]; then
+    [ -t 0 ] || { cfg_get default; echo; return; }
+    load_menu
+    local idx
+    idx=$(index_of "$(cfg_get default)"); [ "$idx" -lt 0 ] && idx=0
+    choose "选择默认 agent" "$idx" 0
+    cfg_set default "${IDS[$CHOICE]}"
+  else
+    is_known "$1" || die "未知的 agent: $1（agent-picker list 查看可用 id）"
+    cfg_set default "$1"
+  fi
+  printf '默认 agent: %s\n' "$(cfg_get default)"
+}
+
+cmd_mode() {
+  [ $# -eq 0 ] && { cfg_get mode; echo; return; }
+  case "$1" in
+    ask|auto|off) cfg_set mode "$1"; printf '模式: %s\n' "$1" ;;
+    *) die "模式只能是 ask（弹菜单）/ auto（直接启动默认）/ off（关闭）" ;;
+  esac
+}
+
+cmd_timeout() {
+  [ $# -eq 0 ] && { cfg_get timeout; echo; return; }
+  printf '%s' "$1" | grep -qE '^[0-9]+$' && [ "$1" -le 600 ] || die "timeout 需要 0-600 之间的整数秒（0 表示一直等待）"
+  cfg_set timeout "$1"
+  printf '倒计时: %ss\n' "$1"
+}
+
+write_agent_line() { # id new_line(空=删除)
+  ensure_config
+  local tmp="$AGENTS_FILE.tmp.$$"
+  awk -F'|' -v id="$1" '$1 != id' "$AGENTS_FILE" > "$tmp"
+  [ -n "$2" ] && printf '%s\n' "$2" >> "$tmp"
+  mv "$tmp" "$AGENTS_FILE"
+}
+
+cmd_add() {
+  [ $# -eq 3 ] || die '用法: agent-picker add <id> <显示名> <启动命令>'
+  valid_id "$1" || die "id 只能包含小写字母、数字、- 和 _"
+  [ "$1" = "$SHELL_ID" ] && die "shell 是保留 id"
+  case "$2$3" in *'|'*) die "显示名和启动命令里不能包含 |" ;; esac
+  write_agent_line "$1" "$1|$2|$3"
+  printf '已添加: %s → %s\n' "$1" "$3"
+}
+
+cmd_remove() {
+  [ $# -eq 1 ] || die '用法: agent-picker remove <id>'
+  is_known "$1" && [ "$1" != "$SHELL_ID" ] || die "未知的 agent: $1"
+  if is_builtin "$1"; then
+    local name
+    name=$(printf '%s\n' "$BUILTIN_AGENTS" | awk -F'|' -v id="$1" '$1 == id { print $2 }')
+    write_agent_line "$1" "$1|$name|-"
+    printf '已隐藏内置项: %s\n' "$1"
+  else
+    write_agent_line "$1" ""
+    printf '已删除: %s\n' "$1"
+  fi
+  [ "$(cfg_get default)" = "$1" ] && cfg_set default "$SHELL_ID" && printf '默认项已重置为 shell\n'
+}
+
+cmd_config() {
+  ensure_config
+  printf '配置文件: %s\n自定义 agent: %s\n\n' "$CONFIG_FILE" "$AGENTS_FILE"
+  cat "$CONFIG_FILE"
+}
+
+rc_remove() { # file
+  [ -f "$1" ] || return 0
+  local tmp="$1.agent-picker.$$"
+  awk -v b="$BLOCK_BEGIN" -v e="$BLOCK_END" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$1" > "$tmp" \
+    && cat "$tmp" > "$1"
+  rm -f "$tmp"
+}
+
+rc_add() { # file
+  rc_remove "$1"
+  printf '\n%s\nexport AGENT_PICKER_HOME="%s"\n[ -f "$AGENT_PICKER_HOME/hook.sh" ] && . "$AGENT_PICKER_HOME/hook.sh"\n%s\n' \
+    "$BLOCK_BEGIN" "$APP_HOME" "$BLOCK_END" >> "$1"
+}
+
+cmd_uninstall() {
+  local rc
+  for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do rc_remove "$rc"; done
+  [ -x "$APP_HOME/bin/agent-picker" ] && rm -rf "$APP_HOME"
+  if [ "${1:-}" = "--purge" ]; then
+    rm -rf "$CONFIG_DIR"
+    printf '已卸载，并删除配置 %s\n' "$CONFIG_DIR"
+  else
+    printf '已卸载（配置保留在 %s，加 --purge 一并删除）\n' "$CONFIG_DIR"
+  fi
+}
+
+usage() {
+  cat <<EOF
+agent-picker $VERSION — 打开终端时选择要启动的 CLI agent
+
+用法:
+  agent-picker                  弹出菜单选择并启动
+  agent-picker list             列出支持的 agent 及安装状态
+  agent-picker default [id]     查看/设置默认 agent（不带 id 时弹菜单选）
+  agent-picker mode [ask|auto|off]
+                                ask=打开终端弹菜单  auto=直接启动默认  off=关闭
+  agent-picker timeout [秒]      菜单倒计时，到时启动默认项（0=一直等）
+  agent-picker add <id> <名称> <命令>   添加自定义 agent
+  agent-picker remove <id>      删除自定义 agent / 隐藏内置 agent
+  agent-picker config           查看配置
+  agent-picker uninstall [--purge]
+
+临时跳过: AGENT_PICKER=0 打开终端，或在菜单里按 q
+EOF
+}
+
+main() {
+  local sub="${1:-pick}"
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    pick) cmd_pick 0 0 ;;
+    launch) cmd_launch ;;
+    list|ls) cmd_list ;;
+    default) cmd_default "$@" ;;
+    mode) cmd_mode "$@" ;;
+    timeout) cmd_timeout "$@" ;;
+    add) cmd_add "$@" ;;
+    remove|rm) cmd_remove "$@" ;;
+    config) cmd_config ;;
+    uninstall) cmd_uninstall "$@" ;;
+    _rc-add) rc_add "$1" ;;
+    _rc-remove) rc_remove "$1" ;;
+    -v|--version|version) echo "$VERSION" ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; exit 1 ;;
+  esac
+}
+
+main "$@"
